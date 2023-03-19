@@ -1,0 +1,415 @@
+---
+title: "lme4"
+author: "Iwan"
+date: "5/11/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(lme4) # for multilevel models
+library(tidyverse) # for data manipulation and plots
+library(haven) #for reading sav data
+library(sjstats) #for calculating intra-class correlation (ICC)
+library(effects) #for plotting parameter effects
+library(jtools) #for transformaing model summaries
+library(ROCR) #for calculating area under the curve (AUC) statistics
+library(compositions)
+#df <- read.csv("/Users/iwan/Research/Somatic_mutations/output_data/somatic_mutations_full_dataframe.csv")
+#df['patient_id'] <- sapply(strsplit(df$biopsy_number,"_"), `[`, 1)
+#revelant_genes <- stats_output_df$A
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+encode_ordinal <- function(x, order = unique(x)) {
+  x <- as.numeric(factor(x, levels = order, exclude = NULL))
+  x
+}
+
+#new_df <- df[df$Location_rough == 'colon' ,]
+df[["Inflammation"]] <- encode_ordinal(df[["Inflammation"]]) 
+df[["Diagnosis"]] <- encode_ordinal(df[["Diagnosis"]]) 
+df[["Location_rough"]] <- encode_ordinal(df[["Location_rough"]])
+df$Diagnosis <- df$Diagnosis -1
+df$Inflammation <- df$Inflammation -1
+df$Location_rough <- df$Location_rough -1
+df$Sex <- df$Sex -1
+#new_df$age_at_biopsy <- clr(new_df$age_at_biopsy)
+#new_df$age_at_biopsy <- new_df[,c('age_at_biopsy'), drop=TRUE]
+#new_df$Gene_expression_total <- clr(new_df$Gene_expression_total)
+#new_df$Gene_expression_total <- new_df[,c('Gene_expression_total'), drop=TRUE]
+#new_df$BMI <- clr(new_df$BMI)
+#new_df$BMI <- new_df[,c('BMI'), drop=TRUE]
+#new_df$age_at_biopsy <- new_df$age_at_biopsy / mean(new_df$age_at_biopsy, na.rm=TRUE)
+#new_df$Gene_expression_total <- new_df$Gene_expression_total / mean(new_df$Gene_expression_total, na.rm=TRUE)
+#new_df$BMI <- new_df$BMI / mean(new_df$BMI, na.rm=TRUE)
+
+#df <- na.omit(df)
+#glmer('Diagnosis ~ DUOX2 + age_at_biopsy + Sex + BMI + Gene_expression_total + Inflammation + Location_rough + (1|patient_id)', data=new_df, na.action = na.omit, family = binomial(link = "logit"))
+storage <- c()
+#genes <- c('XIAP', 'DUOX2')
+# maybe colnames 2:...colnames(df)[2:22544]  + age_at_biopsy  + Gene_expression_total + BMI
+# all genes 
+for (gene in colnames(df)[2:10214]){
+  #print(gene)
+  # if 1|patient_id exists 
+  if (length(rownames(na.omit(df[glue::glue("{gene}_gene_expression")]) )) > 2){
+  #  if ()
+  #df[glue::glue("{gene}_gene_expression"),] <- df[glue::glue("{gene}_gene_expression"),] / max(df[glue::glue("{gene}_gene_expression"),], na.rm=TRUE)
+    #print(gene)
+    sumsum <- summary(lmer(glue::glue('Inflammation ~ {gene} +  {gene}_gene_expression + Location_rough + Sex + Diagnosis+  (1|patient_id)'), data=df, na.action = na.omit)) # + {gene}_gene_length
+    coefs <- data.frame(coef(summary(sumsum)))
+    coefs$p.z <- 2 * (1 - pnorm(abs(coefs$t.value)))
+    p_value <- coefs$p.z[2]
+    storage <- c(storage, rownames(coefs)[2], p_value)
+    
+    #if(nrow(sumsum$coefficients) >= 6){
+    #  p_value <- sumsum$coefficients[gene,][4] 
+    #  storage <- c(storage, gene, p_value)
+    #}
+  }
+}
+#sumsum <- summary(lm(glue::glue('Inflammation ~ DUOX2 + DUOX2_gene_expression + Location_rough + Sex + Diagnosis'), data=df, na.action = na.omit))
+```
+
+```{r cars}
+p_genes <- c()
+p_values <- c()
+for (i in seq(1, 22543, 2)){
+  #print(i)
+  p_genes <- c(p_genes, storage[i])
+  p_values <- c(p_values, storage[i+1])
+}
+stats_output_df <- na.omit(do.call(rbind, Map(data.frame, A=p_genes, B=p_values)))
+stats_output_df['Adjusted_p'] <- p.adjust(stats_output_df$B, method = 'hochberg')
+#print(na.omit(stats_output_df[stats_output_df$Adjusted_p <= 0.05,]))
+relevant_p <- stats_output_df[ (0 < stats_output_df$Adjusted_p) &  (stats_output_df$Adjusted_p <= 0.05),]
+relevant_p_filter <- relevant_p[!grepl(pattern = "gene_expression", row.names(relevant_p)),]
+
+print(relevant_p_filter)
+# create patient id by cutting off underscores of biopsy id
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+library(ggplot2)
+library(EnvStats)
+library(ggsignif)
+gene_list <- c('VNN3', 'EDARADD', 'SLC19A3', 'IGLVVI.22.1	')
+#
+plot_df <- read.csv("/Users/iwan/Research/Somatic_mutations/output_data/somatic_mutations_full_dataframe.csv")
+for (gene in c('APOB')){
+  p <- ggplot(plot_df, aes_string(x="Location_rough", y=gene,  fill="Location_rough")) + 
+  geom_violin(aes(color = Location_rough), trim = FALSE, position = position_dodge(0.9), alpha=.10, size=0.8) +
+  geom_boxplot(aes(color=Location_rough), alpha=0, width=0.3, size=0.8)+
+  theme_bw()+
+  labs(y = "Number of somatic mutations per sample") +
+  geom_jitter(aes(color=Location_rough), alpha=0.4, width=0.1, height = 0.1) +
+  ggtitle(gene)  
+  #$#geom_signif(comparisons = list(c("Yes", "No")), map_signif_level=TRUE)
+  print(p)
+}
+
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+
+
+
+```{r pressure, echo=FALSE}
+df <- read.csv('/Users/iwan/Research/Somatic_mutations/output_data/somatic_mutations_post_filter.csv')
+encode_ordinal <- function(x, order = unique(x)) {
+  x <- as.numeric(factor(x, levels = order, exclude = NULL))
+  x
+}
+df['patient_id'] <- sapply(strsplit(df$biopsy_number,"_"), `[`, 1)
+
+df[["Inflammation"]] <- encode_ordinal(df[["Inflammation"]]) 
+df[["Diagnosis"]] <- encode_ordinal(df[["Diagnosis"]]) 
+df[["Location_rough"]] <- encode_ordinal(df[["Location_rough"]])
+df$Diagnosis <- df$Diagnosis -1
+df$Inflammation <- df$Inflammation -1
+df$Location_rough <- df$Location_rough -1
+df$Sex <- df$Sex -1
+
+
+#df <- na.omit(df)
+#glmer('Diagnosis ~ DUOX2 + age_at_biopsy + Sex + BMI + Gene_expression_total + Inflammation + Location_rough + (1|patient_id)', data=new_df, na.action = na.omit, family = binomial(link = "logit"))
+storage <- c()
+coef_storage_inflam  <- c()
+#genes <- c('XIAP', 'DUOX2')
+# maybe colnames 2:...colnames(df)[2:22544]  + age_at_biopsy  + Gene_expression_total + BMI
+# all genes 
+for (gene in colnames(df)[2:16274]){
+  # if 1|patient_id exists 
+  if (length(rownames(na.omit(df[glue::glue("{gene}_gene_expression")]) )) > 2){
+  #  if ()
+  #df[glue::glue("{gene}_gene_expression"),] <- df[glue::glue("{gene}_gene_expression"),] / max(df[glue::glue("{gene}_gene_expression"),], na.rm=TRUE)
+    #print(gene)
+    sumsum <- summary(lmer(glue::glue('Inflammation ~ {gene} + Age_at_biopsy +  {gene}_gene_expression + Location_rough + Sex + Diagnosis+  (1|patient_id)'), data=df, na.action = na.omit))
+    coefs <- data.frame(coef(summary(sumsum)))
+    coefs$p.z <- 2 * (1 - pnorm(abs(coefs$t.value)))
+    coef_storage_inflam <- c(coef_storage_inflam, rownames(coefs)[2], coefs$Estimate[2], coefs$t.value[2])
+    p_value <- coefs$p.z[2]
+    storage <- c(storage, rownames(coefs)[2], p_value)
+    
+    #if(nrow(sumsum$coefficients) >= 6){
+    #  p_value <- sumsum$coefficients[gene,][4] 
+    #  storage <- c(storage, gene, p_value)
+    #}
+  }
+}
+
+
+p_genes <- c()
+p_values <- c()
+for (i in seq(1, 40000, 2)){
+  #print(i)
+  p_genes <- c(p_genes, storage[i])
+  p_values <- c(p_values, storage[i+1])
+}
+c_genes <- c()
+c_es <- c()
+c_t <- c()
+for (i in seq(1, 60000, 3)){
+  c_genes <- c(c_genes, coef_storage_inflam[i])
+  c_es <- c(c_es, coef_storage_inflam[i+1])
+  c_t <- c(c_t, coef_storage_inflam[i+2])
+}
+
+stats_output_df_inflam <- na.omit(do.call(rbind, Map(data.frame, A=p_genes, B=p_values, C=c_es, D=c_t)))
+stats_output_df_inflam['Adjusted_p'] <- p.adjust(stats_output_df_inflam$B, method = 'hochberg')
+#print(na.omit(stats_output_df[stats_output_df$Adjusted_p <= 0.05,]))
+relevant_p_inflam <- stats_output_df_inflam[ (as.numeric(stats_output_df_inflam$B) <= 0.05),]
+relevant_p_filter_inflam <- relevant_p_inflam[!grepl(pattern = "gene_expression", row.names(relevant_p_inflam)),]
+colnames(relevant_p_filter_inflam) <- c('Genes', 'P_values', 'Coef', 't_val', 'FDR corrected P')
+    
+print(relevant_p_filter_inflam)
+# create patient id by cutting off underscores of biopsy id
+
+
+
+plot_df <- read.csv("/Users/iwan/Research/Somatic_mutations/output_data/somatic_mutations_post_filter.csv")
+for (gene in relevant_p_filter_inflam$A){
+  p <- ggplot(plot_df, aes_string(x="Inflammation", y=gene,  fill="Inflammation")) + 
+  geom_violin(aes(color = Inflammation), trim = FALSE, position = position_dodge(0.9), alpha=.10, size=0.8) + stat_n_text() +
+  geom_boxplot(aes(color=Inflammation), alpha=0, width=0.3, size=0.8)+
+  theme_bw()+
+  labs(y = "Number of somatic mutations per sample") +
+  geom_jitter(aes(color=Inflammation), alpha=0.4, width=0.1) +
+  ggtitle(gene)  + geom_signif(comparisons = list(c("Yes", "No")), map_signif_level=TRUE)
+  print(p)
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r pressure, echo=FALSE}
+df <- read.csv('/Users/iwan/Research/Somatic_mutations/output_data/somatic_mutations_post_filter.csv')
+
+df['patient_id'] <- sapply(strsplit(df$biopsy_number,"_"), `[`, 1)
+
+df[["Inflammation"]] <- encode_ordinal(df[["Inflammation"]]) 
+df[["Diagnosis"]] <- encode_ordinal(df[["Diagnosis"]]) 
+df[["Location_rough"]] <- encode_ordinal(df[["Location_rough"]])
+df$Diagnosis <- df$Diagnosis -1
+df$Inflammation <- df$Inflammation -1
+df$Location_rough <- df$Location_rough -1
+df$Sex <- df$Sex -1
+
+storage <- c()
+coef_storage_diagnosis  <- c()
+genes <- c('XIAP', 'DUOX2')
+# maybe colnames 2:...colnames(df)[2:22544]  + age_at_biopsy  + Gene_expression_total + BMI
+# all genes 
+for (gene in colnames(df)[2:16274]){
+  #print(gene)
+  # if 1|patient_id exists 
+  if (length(rownames(na.omit(df[glue::glue("{gene}_gene_expression")]) )) > 2){
+  #  if ()
+    df[glue::glue("{gene}_gene_expression")] <- df[glue::glue("{gene}_gene_expression")] / max(df[glue::glue("{gene}_gene_expression")], na.rm=TRUE)
+    #df$Age_at_biopsy <- df$Age_at_biopsy / max(df$Age_at_biopsy)
+    #print(gene)
+    if (length(rownames(na.omit(df[glue::glue("{gene}_gene_expression")]) )) > 2){
+      sumsum <-  summary(lmer(glue::glue('Diagnosis ~ {gene} +  {gene}_gene_expression + Inflammation + Sex + Location_rough+  (1|patient_id)'), data=df, na.action = na.omit))
+      coefs <- data.frame(coef(sumsum))
+      coefs$p.z <- 2 * (1 - pnorm(abs(coefs$t.value)))
+      coef_storage_diagnosis <- c(coef_storage_diagnosis, rownames(coefs)[2], coefs$Estimate[2], coefs$t.value[2])
+      p_value <- coefs$p.z[2]
+      storage <- c(storage, rownames(coefs)[2], p_value)
+    
+    #if(nrow(sumsum$coefficients) >= 6){
+    #  p_value <- sumsum$coefficients[gene,][4] 
+    #  storage <- c(storage, gene, p_value)
+    #} 
+    }
+  }
+}
+
+#+ Age_at_biopsy   + Sex  '
+p_genes <- c()
+p_values <- c()
+for (i in seq(1, 40000, 2)){
+  #print(i)
+  p_genes <- c(p_genes, storage[i])
+  p_values <- c(p_values, storage[i+1])
+}
+c_genes <- c()
+c_es <- c()
+c_t <- c()
+for (i in seq(1, 60000, 3)){
+  c_genes <- c(c_genes, coef_storage_diagnosis[i])
+  c_es <- c(c_es, coef_storage_diagnosis[i+1])
+  c_t <- c(c_t, coef_storage_diagnosis[i+2])
+}
+
+
+stats_output_df <- na.omit(do.call(rbind, Map(data.frame, A=p_genes, B=p_values, C=c_es, D=c_t)))
+stats_output_df['Adjusted_p'] <- p.adjust(stats_output_df$B, method = 'hochberg')
+#print(na.omit(stats_output_df[stats_output_df$Adjusted_p <= 0.05,]))
+relevant_p_diag <- stats_output_df[ (as.numeric(stats_output_df$B) <= 0.05),]
+relevant_p_filter_diag <- relevant_p_diag[!grepl(pattern = "gene_expression", row.names(relevant_p_diag)),]
+colnames(relevant_p_filter_diag) <- c('Genes', 'P_values', 'Coef', 't_val', 'FDR corrected P')
+     
+print(relevant_p_filter_diag)
+# create patient id by cutting off underscores of biopsy id
+
+
+
+plot_df <- read.csv("/Users/iwan/Research/Somatic_mutations/output_data/somatic_mutations_post_filter.csv")
+for (gene in relevant_p_filter$A){
+  p <- ggplot(plot_df, aes_string(x="Diagnosis", y=gene,  fill="Diagnosis")) + 
+  geom_violin(aes(color = Diagnosis), trim = FALSE, position = position_dodge(0.9), alpha=.10, size=0.8) + stat_n_text() +
+  geom_boxplot(aes(color=Diagnosis), alpha=0, width=0.3, size=0.8)+
+  theme_bw()+
+  labs(y = "Number of somatic mutations per sample") +
+  geom_jitter(aes(color=Diagnosis), alpha=0.4, width=0.1, height = 0.1) +
+  ggtitle(gene)  
+  #$#geom_signif(comparisons = list(c("Yes", "No")), map_signif_level=TRUE)
+  print(p)
+}
+```
+
+
+
+
+```{r pressure, echo=FALSE}
+df <- read.csv('/Users/iwan/Research/Somatic_mutations/output_data/somatic_mutations_post_filter.csv')
+df['patient_id'] <- sapply(strsplit(df$biopsy_number,"_"), `[`, 1)
+
+df[["Inflammation"]] <- encode_ordinal(df[["Inflammation"]]) 
+df[["Diagnosis"]] <- encode_ordinal(df[["Diagnosis"]]) 
+df[["Location_rough"]] <- encode_ordinal(df[["Location_rough"]])
+df$Diagnosis <- df$Diagnosis -1
+df$Inflammation <- df$Inflammation -1
+df$Location_rough <- df$Location_rough -1
+df$Sex <- df$Sex -1
+#new_df$age_at_biopsy <- clr(new_df$age_at_biopsy)
+#new_df$age_at_biopsy <- new_df[,c('age_at_biopsy'), drop=TRUE]
+#new_df$Gene_expression_total <- clr(new_df$Gene_expression_total)
+#new_df$Gene_expression_total <- new_df[,c('Gene_expression_total'), drop=TRUE]
+#new_df$BMI <- clr(new_df$BMI)
+#new_df$BMI <- new_df[,c('BMI'), drop=TRUE]
+#new_df$age_at_biopsy <- new_df$age_at_biopsy / mean(new_df$age_at_biopsy, na.rm=TRUE)
+#new_df$Gene_expression_total <- new_df$Gene_expression_total / mean(new_df$Gene_expression_total, na.rm=TRUE)
+#new_df$BMI <- new_df$BMI / mean(new_df$BMI, na.rm=TRUE)
+
+#df <- na.omit(df)
+#glmer('Diagnosis ~ DUOX2 + age_at_biopsy + Sex + BMI + Gene_expression_total + Inflammation + Location_rough + (1|patient_id)', data=new_df, na.action = na.omit, family = binomial(link = "logit"))
+storage <- c()
+coef_storage <- c()
+#genes <- c('XIAP', 'DUOX2')
+# maybe colnames 2:...colnames(df)[2:22544]  + age_at_biopsy  + Gene_expression_total + BMI
+# all genes 
+for (gene in colnames(df)[2:16274]){
+  print(gene)
+  # if 1|patient_id exists 
+  if (length(rownames(na.omit(df[glue::glue("{gene}_gene_expression")]) )) > 2){
+  #  if ()
+  #df[glue::glue("{gene}_gene_expression"),] <- df[glue::glue("{gene}_gene_expression"),] / max(df[glue::glue("{gene}_gene_expression"),], na.rm=TRUE)
+    #print(gene)
+    sumsum <- summary(lmer(glue::glue('Location_rough ~ {gene} +  {gene}_gene_expression + Inflammation + Sex + Diagnosis+  (1|patient_id)'), data=df, na.action = na.omit))
+    coefs <- data.frame(coef(summary(sumsum)))
+    coefs$p.z <- 2 * (1 - pnorm(abs(coefs$t.value)))
+    coef_storage<- c(coef_storage, rownames(coefs)[2], coefs$Estimate[2], coefs$t.value[2])
+    p_value <- coefs$p.z[2]
+    storage <- c(storage, rownames(coefs)[2], p_value)
+    
+    #if(nrow(sumsum$coefficients) >= 6){
+    #  p_value <- sumsum$coefficients[gene,][4] 
+    #  storage <- c(storage, gene, p_value)
+    #}
+  }
+}
+
+p_genes <- c()
+p_values <- c()
+for (i in seq(1, 40000, 2)){
+  #print(i)
+  p_genes <- c(p_genes, storage[i])
+  p_values <- c(p_values, storage[i+1])
+}
+c_genes <- c()
+c_es <- c()
+c_t <- c()
+for (i in seq(1, 60000, 3)){
+  c_genes <- c(c_genes, coef_storage_diagnosis[i])
+  c_es <- c(c_es, coef_storage_diagnosis[i+1])
+  c_t <- c(c_t, coef_storage_diagnosis[i+2])
+}
+stats_output_df <- na.omit(do.call(rbind, Map(data.frame, A=p_genes, B=p_values, C=c_es, D=c_t)))
+stats_output_df['Adjusted_p'] <- p.adjust(stats_output_df$B, method = 'hochberg')
+#print(na.omit(stats_output_df[stats_output_df$Adjusted_p <= 0.05,]))
+relevant_p <- stats_output_df[ (as.numeric(stats_output_df$B) <= 0.05),]
+relevant_p_filter <- relevant_p[!grepl(pattern = "gene_expression", row.names(relevant_p)),]
+colnames(relevant_p_filter) <- c('Genes', 'P_values', 'Coef', 't_val', 'FDR corrected P')
+print(relevant_p_filter)
+# create patient id by cutting off underscores of biopsy id
+
+
+
+plot_df <- read.csv("/Users/iwan/Research/Somatic_mutations/output_data/somatic_mutations_post_filter.csv")
+for (gene in relevant_p_filter$A){
+  p <- ggplot(plot_df, aes_string(x="Location_rough", y=gene,  fill="Location_rough")) + 
+  geom_violin(aes(color = Location_rough), trim = FALSE, position = position_dodge(0.9), alpha=.10, size=0.8) + stat_n_text() +
+  geom_boxplot(aes(color=Location_rough), alpha=0, width=0.3, size=0.8)+
+  theme_bw()+
+  labs(y = "Number of somatic mutations per sample") +
+  geom_jitter(aes(color=Location_rough), alpha=0.4, width=0.1) +
+  ggtitle(gene)  
+  geom_signif(comparisons = list(c("colon", "ileum")), map_signif_level=TRUE)
+  print(p)
+}
+```
+
+merged_output <- merge(merge(relevant_p_filter_diag, relevant_p_filter_inflam, by = 'Genes', all=TRUE), relevant_p_filter, by='Genes', all=TRUE)
+
+colnames(merged_output) <- c('Genes', 'P_values_diag', 'Coef_diag', 't_val_diag', 'FDR_corrected_p_diag','P_values_infl', 'Coef_infl', 't_val_infl', 'FDR_corrected_p_infl', 'P_values_loc', 'Coef_loc', 't_val_loc', 'FDR_corrected_p_loc')
+
+
+```{r pressure, echo=FALSE}
+sumsum <- summary(lmer(glue::glue('Inflammation ~ {gene} +  {gene}_gene_expression + Location_rough + Sex + Diagnosis+  (1|patient_id)'), data=df, na.action = na.omit))
+```
+
